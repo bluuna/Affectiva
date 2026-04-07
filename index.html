@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Detector de Emociones</title>
+
+<script defer src="https://unpkg.com/face-api.js@0.22.2/dist/face-api.min.js"></script>
+
+<style>
+  body {
+    font-family: 'Segoe UI', sans-serif;
+    background: linear-gradient(135deg, #e3f2fd, #ffffff);
+    text-align: center;
+    padding: 20px;
+  }
+
+  h2 { color: #333; }
+
+  .container {
+    position: relative;
+    width: 640px;
+    height: 480px;
+    margin: auto;
+    border-radius: 15px;
+    overflow: hidden;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+    background: white;
+  }
+
+  video {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 1;
+    transform: scaleX(-1);
+  }
+
+  canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 2;
+  }
+
+  .emoji {
+    position: absolute;
+    font-size: 60px;
+    z-index: 3;
+    pointer-events: none;
+    transition: all 0.1s linear;
+  }
+
+  button {
+    margin-top: 15px;
+    padding: 10px 20px;
+    border-radius: 8px;
+    border: none;
+    background: #2196f3;
+    color: white;
+    cursor: pointer;
+  }
+</style>
+</head>
+
+<body>
+
+<h2>Detector de Emociones</h2>
+
+<div class="container" id="container">
+  <video id="video" width="640" height="480" autoplay muted></video>
+  <canvas id="canvas" width="640" height="480"></canvas>
+</div>
+
+<button onclick="start()">Iniciar cámara</button>
+
+<script>
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const container = document.getElementById("container");
+
+const MODEL_URL = 'https://justadudewhohacks.github.io/face-api.js/models';
+
+async function start() {
+  const stream = await navigator.mediaDevices.getUserMedia({ video: {} });
+  video.srcObject = stream;
+
+  await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+  await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL);
+  await faceapi.nets.faceExpressionNet.loadFromUri(MODEL_URL);
+
+  detect();
+}
+
+// 🎭 EMOCIÓN BASE
+function getEmoji(expressions) {
+  const max = Object.entries(expressions).reduce((a, b) => a[1] > b[1] ? a : b);
+
+  switch(max[0]) {
+    case "happy": return "😄";
+    case "sad": return "😢";
+    case "angry": return "😡";
+    case "surprised": return "😲";
+    case "fearful": return "😨";
+    case "disgusted": return "🤢";
+    default: return "😐";
+  }
+}
+
+// 👁️ GUIÑO
+function getEyeRatio(eye) {
+  const vertical = Math.abs(eye[1].y - eye[5].y);
+  const horizontal = Math.abs(eye[0].x - eye[3].x);
+  return vertical / horizontal;
+}
+
+function isWinking(landmarks) {
+  const leftEye = landmarks.getLeftEye();
+  const rightEye = landmarks.getRightEye();
+
+  const left = getEyeRatio(leftEye);
+  const right = getEyeRatio(rightEye);
+
+  // 👇 uno cerrado FUERTE y el otro claramente abierto
+  return (left < 0.12 && right > 0.22) || (right < 0.12 && left > 0.22);
+}
+
+// 😮 BOCA ABIERTA
+function isMouthOpen(landmarks) {
+  const mouth = landmarks.getMouth();
+  return (mouth[19].y - mouth[13].y) > 15;
+}
+
+function isTongue(landmarks, expressions) {
+  const mouth = landmarks.getMouth();
+
+  const height = Math.abs(mouth[14].y - mouth[18].y);
+
+  return height > 20 && expressions.happy > 0.5;
+}
+
+function isKiss(landmarks) {
+  const mouth = landmarks.getMouth();
+
+  const width = Math.abs(mouth[0].x - mouth[6].x);
+  const height = Math.abs(mouth[3].y - mouth[9].y);
+
+  const ratio = width / height;
+
+  return (
+    ratio < 2.5 &&     // estrecho
+    height < 12 &&     // casi cerrado
+    width < 60         // evita falsas detecciones lejos
+  );
+}
+
+async function detect() {
+
+  const detections = await faceapi
+    .detectAllFaces(video, new faceapi.TinyFaceDetectorOptions())
+    .withFaceLandmarks()
+    .withFaceExpressions();
+
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  document.querySelectorAll(".emoji").forEach(e => e.remove());
+
+  detections.forEach(det => {
+
+    const box = det.detection.box;
+    const x = canvas.width - box.x - box.width;
+
+    // 🟩 caja
+    ctx.strokeStyle = "#00c853";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x, box.y, box.width, box.height);
+
+    // 🔵 puntos
+    det.landmarks.positions.forEach(p => {
+      ctx.beginPath();
+      ctx.arc(canvas.width - p.x, p.y, 2, 0, 2*Math.PI);
+      ctx.fillStyle = "#00bcd4";
+      ctx.fill();
+    });
+
+    // 🎭 LÓGICA FINAL (gestos + emoción)
+    let emo = getEmoji(det.expressions);
+
+
+        if (isWinking(det.landmarks)) {
+        emo = "😉";
+        }
+        else if (isKiss(det.landmarks)) {
+        emo = "😘";
+        }
+        else if (isTongue(det.landmarks, det.expressions)) {
+        emo = "😜";
+        }
+        else if (isMouthOpen(det.landmarks)) {
+        emo = "😮";
+        }
+
+    // 😄 emoji
+    const emoji = document.createElement("div");
+    emoji.className = "emoji";
+    emoji.innerText = emo;
+
+    emoji.style.left = (x + box.width/2 - 30) + "px";
+    emoji.style.top = (box.y - 60) + "px";
+
+    container.appendChild(emoji);
+  });
+
+  requestAnimationFrame(detect);
+}
+</script>
+
+</body>
+</html>
